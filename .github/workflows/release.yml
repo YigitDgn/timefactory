@@ -1,0 +1,73 @@
+# Builds TimeFactory on every push to main and publishes a GitHub release for
+# the version in Cargo.toml (tag vX.Y.Z). If a release for that version
+# already exists, the build is skipped, so bump `version` in Cargo.toml to
+# ship a new release.
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version from Cargo.toml
+        id: version
+        shell: bash
+        run: |
+          version=$(grep -m1 '^version = ' Cargo.toml | sed -E 's/version = "(.*)"/\1/')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if gh release view "v$version" > /dev/null 2>&1; then
+            echo "Release v$version already exists, nothing to do."
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Rust
+        if: steps.version.outputs.exists == 'false'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        if: steps.version.outputs.exists == 'false'
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        if: steps.version.outputs.exists == 'false'
+        run: cargo build --release --locked
+
+      - name: Package
+        if: steps.version.outputs.exists == 'false'
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $exe = "dist/TimeFactory-v$version-windows-x64.exe"
+          Copy-Item target/release/TimeFactory.exe $exe
+          Compress-Archive -Path target/release/TimeFactory.exe, README.md, LICENSE -DestinationPath "dist/TimeFactory-v$version-windows-x64.zip"
+          Get-ChildItem dist -File | ForEach-Object {
+            "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name
+          } | Set-Content dist/SHA256SUMS.txt
+
+      - name: Create release
+        if: steps.version.outputs.exists == 'false'
+        shell: bash
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          gh release create "v$version" dist/* \
+            --title "TimeFactory v$version" \
+            --target "$GITHUB_SHA" \
+            --generate-notes

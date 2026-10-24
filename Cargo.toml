@@ -1,0 +1,24 @@
+[package]
+name = "timefactory"
+version = "0.2.1"
+edition = "2021"
+
+[[bin]]
+name = "TimeFactory"
+path = "src/main.rs"
+
+[dependencies]
+eframe = { version = "0.31", default-features = false, features = ["glow", "default_fonts"] }
+egui-phosphor = "0.9"
+raw-window-handle = "0.6"
+rusqlite = { version = "0.32", features = ["bundled"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+winapi = { version = "0.3", features = ["winuser", "commctrl", "processthreadsapi", "winbase", "handleapi", "synchapi", "errhandlingapi", "winerror", "winver", "minwindef", "windef", "winnt", "dwmapi", "uxtheme", "winreg", "libloaderapi", "wingdi", "shellapi", "sysinfoapi"] }
+
+[build-dependencies]
+embed-resource = "2"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true

@@ -1,0 +1,4 @@
+# MSVC builds (used by the release workflow): link the C runtime statically so
+# TimeFactory.exe runs without the Visual C++ Redistributable installed.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

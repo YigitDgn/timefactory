@@ -1,0 +1,16 @@
+# Rust build output
+/target
+
+# Local databases (never commit tracking data)
+*.db
+*.db-wal
+*.db-shm
+
+# Debug symbols
+*.pdb
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

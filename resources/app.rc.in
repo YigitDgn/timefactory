@@ -1,0 +1,31 @@
+// Template: build.rs fills in the @...@ placeholders (version from Cargo.toml)
+// and compiles the result.
+1 ICON "@RES_DIR@/logo.ico"
+1 24 "@RES_DIR@/app.manifest"
+
+1 VERSIONINFO
+FILEVERSION @VER_MAJOR@,@VER_MINOR@,@VER_PATCH@,0
+PRODUCTVERSION @VER_MAJOR@,@VER_MINOR@,@VER_PATCH@,0
+FILEFLAGSMASK 0x3f
+FILEFLAGS 0x0
+FILEOS 0x40004
+FILETYPE 0x1
+FILESUBTYPE 0x0
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "041f04b0"
+        BEGIN
+            VALUE "FileDescription", "TimeFactory"
+            VALUE "FileVersion", "@VERSION@"
+            VALUE "InternalName", "TimeFactory"
+            VALUE "OriginalFilename", "TimeFactory.exe"
+            VALUE "ProductName", "TimeFactory"
+            VALUE "ProductVersion", "@VERSION@"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x041f, 1200
+    END
+END
