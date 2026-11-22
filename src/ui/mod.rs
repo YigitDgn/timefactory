@@ -7,12 +7,12 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use chrono::{Datelike, Days, Local, Months, NaiveDate};
 use eframe::egui::{
     self, text::LayoutJob, vec2, Align, Color32, Frame, Layout, Margin, RichText, ScrollArea,
     Stroke, TextFormat, TextureHandle, TextureId, Ui,
 };
 use egui_phosphor::regular as icon;
+use jiff::{civil::Date, ToSpan, Zoned};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winapi::shared::windef::HWND;
 
@@ -48,29 +48,45 @@ const NAV: [(Page, &str, &str); 4] = [
     (Page::Settings, icon::GEAR, "Ayarlar"),
 ];
 
-fn today() -> NaiveDate {
-    Local::now().date_naive()
+fn today() -> Date {
+    Zoned::now().date()
 }
 
-fn iso(date: NaiveDate) -> String {
-    date.format("%Y-%m-%d").to_string()
+fn iso(date: Date) -> String {
+    date.to_string()
+}
+
+fn shift_date(page: Page, date: Date, forward: bool, today: Date) -> Date {
+    let shifted = match (page, forward) {
+        (Page::Week, true) => date.checked_add(7.days()),
+        (Page::Week, false) => date.checked_sub(7.days()),
+        (Page::Month, true) => date.checked_add(1.month()),
+        (Page::Month, false) => date.checked_sub(1.month()),
+        (_, true) => date.checked_add(1.day()),
+        (_, false) => date.checked_sub(1.day()),
+    };
+    shifted.map_or(date, |next| next.min(today))
+}
+
+fn elapsed_days(from: Date, to: Date, today: Date) -> i64 {
+    let end = to.min(today);
+    let diff = from
+        .until(end)
+        .map(|span| i64::from(span.get_days()))
+        .unwrap_or(0);
+    diff.max(0) + 1
 }
 
 /// First and last day covered by `page` around `date`.
-fn period(page: Page, date: NaiveDate) -> (NaiveDate, NaiveDate) {
+fn period(page: Page, date: Date) -> (Date, Date) {
     match page {
         Page::Week => {
-            let monday = date - Days::new(date.weekday().num_days_from_monday() as u64);
-            (monday, monday + Days::new(6))
+            let offset = i64::from(date.weekday().to_monday_zero_offset());
+            let monday = date.checked_sub(offset.days()).unwrap_or(date);
+            let sunday = monday.checked_add(6.days()).unwrap_or(date);
+            (monday, sunday)
         }
-        Page::Month => {
-            let first = date.with_day(1).unwrap_or(date);
-            let last = first
-                .checked_add_months(Months::new(1))
-                .map(|d| d - Days::new(1))
-                .unwrap_or(date);
-            (first, last)
-        }
+        Page::Month => (date.first_of_month(), date.last_of_month()),
         Page::Day | Page::Settings => (date, date),
     }
 }
@@ -78,31 +94,31 @@ fn period(page: Page, date: NaiveDate) -> (NaiveDate, NaiveDate) {
 /// Everything the current page shows, read from the database.
 struct ViewData {
     page: Page,
-    date: NaiveDate,
+    date: Date,
     loaded_at: Instant,
     total: i64,
     idle: i64,
     apps: Vec<UsageRow>,
     /// Per-day totals for the column chart.
-    days: Vec<(NaiveDate, i64)>,
+    days: Vec<(Date, i64)>,
     minutes: Vec<MinuteRow>,
 }
 
 impl ViewData {
-    fn load(db: &UsageDatabase, page: Page, date: NaiveDate) -> ViewData {
+    fn load(db: &UsageDatabase, page: Page, date: Date) -> ViewData {
         let (from, to) = period(page, date);
         let apps = db.usage_between(&iso(from), &iso(to)).unwrap_or_default();
 
         // The day view charts the 7 days ending at the selected day.
         let (chart_from, chart_to) = match page {
-            Page::Day => (date - Days::new(6), date),
+            Page::Day => (date.checked_sub(6.days()).unwrap_or(date), date),
             _ => (from, to),
         };
         let totals = db
             .daily_totals(&iso(chart_from), &iso(chart_to))
             .unwrap_or_default();
         let days = chart_from
-            .iter_days()
+            .series(1.day())
             .take_while(|d| *d <= chart_to)
             .map(|d| (d, totals.get(&iso(d)).copied().unwrap_or(0)))
             .collect();
@@ -180,9 +196,9 @@ pub struct TimeFactoryApp {
     hwnd: HWND,
 
     page: Page,
-    date: NaiveDate,
+    date: Date,
     data: Option<ViewData>,
-    calendar_month: Option<NaiveDate>,
+    calendar_month: Option<Date>,
 
     theme_mode: ThemeMode,
     dark: bool,
@@ -254,7 +270,13 @@ impl TimeFactoryApp {
     fn apply_theme(&mut self, ctx: &egui::Context) {
         self.dark = self.theme_mode.is_dark();
         self.palette = if self.dark { style::DARK } else { style::LIGHT };
-        ctx.set_visuals(style::visuals(&self.palette, self.dark));
+        let egui_theme = if self.dark {
+            egui::Theme::Dark
+        } else {
+            egui::Theme::Light
+        };
+        ctx.set_theme(egui_theme);
+        ctx.set_visuals_of(egui_theme, style::visuals(&self.palette, self.dark));
         if !self.hwnd.is_null() {
             theme::set_title_bar_dark(self.hwnd, self.dark);
         }
@@ -294,33 +316,22 @@ impl TimeFactoryApp {
     }
 
     fn shift_period(&mut self, forward: bool) {
-        let d = self.date;
-        let shifted = match (self.page, forward) {
-            (Page::Week, true) => d.checked_add_days(Days::new(7)),
-            (Page::Week, false) => d.checked_sub_days(Days::new(7)),
-            (Page::Month, true) => d.checked_add_months(Months::new(1)),
-            (Page::Month, false) => d.checked_sub_months(Months::new(1)),
-            (_, true) => d.checked_add_days(Days::new(1)),
-            (_, false) => d.checked_sub_days(Days::new(1)),
-        };
-        if let Some(date) = shifted {
-            self.date = date.min(today());
-        }
+        self.date = shift_date(self.page, self.date, forward, today());
     }
 
     fn period_title(&self) -> String {
         let (from, to) = period(self.page, self.date);
         match self.page {
-            Page::Week => format!("{} – {}", from.format("%d.%m"), to.format("%d.%m.%Y")),
-            Page::Month => format!("{} {}", month_name(from.month()), from.year()),
-            _ => self.date.format("%d.%m.%Y").to_string(),
+            Page::Week => format!("{} – {}", from.strftime("%d.%m"), to.strftime("%d.%m.%Y")),
+            Page::Month => format!("{} {}", month_name(from.month() as u32), from.year()),
+            _ => self.date.strftime("%d.%m.%Y").to_string(),
         }
     }
 
-    fn sidebar(&mut self, ctx: &egui::Context) {
+    fn sidebar(&mut self, ui: &mut Ui) {
         let p = self.palette;
-        egui::SidePanel::left("nav")
-            .exact_width(236.0)
+        egui::Panel::left("nav")
+            .exact_size(236.0)
             .resizable(false)
             .show_separator_line(false)
             .frame(Frame::new().fill(p.sidebar).inner_margin(Margin {
@@ -329,7 +340,7 @@ impl TimeFactoryApp {
                 top: 22,
                 bottom: 16,
             }))
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.add_space(6.0);
                     if let Some(logo) = &self.logo {
@@ -603,7 +614,7 @@ impl TimeFactoryApp {
                 let title = if viewing_today {
                     "Saatlik Aktivite (Bugün)".to_string()
                 } else {
-                    format!("Saatlik Aktivite ({})", self.date.format("%d.%m"))
+                    format!("Saatlik Aktivite ({})", self.date.strftime("%d.%m"))
                 };
                 card(ui, &p, &title, |ui| {
                     widgets::timeline(ui, &p, &data.minutes, &colors, &legend);
@@ -624,7 +635,7 @@ impl TimeFactoryApp {
         let p = self.palette;
         let today = today();
         let (from, to) = period(self.page, self.date);
-        let elapsed_days = (to.min(today) - from).num_days().max(0) + 1;
+        let elapsed_days = elapsed_days(from, to, today);
         let (total_label, chart_title) = match self.page {
             Page::Week => ("Haftalık toplam", "Günlük Dağılım (Hafta)"),
             _ => ("Aylık toplam", "Günlük Dağılım (Ay)"),
@@ -782,9 +793,10 @@ impl eframe::App for TimeFactoryApp {
         self.palette.card_border.to_normalized_gamma_f32()
     }
 
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.handle_close(ctx);
-        self.refresh(ctx);
+    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        self.handle_close(&ctx);
+        self.refresh(&ctx);
         ctx.request_repaint_after(Duration::from_secs(1));
 
         let live = self.shared.live();
@@ -796,11 +808,11 @@ impl eframe::App for TimeFactoryApp {
                 .map(|a| a.process_name.as_str())
                 .chain(live.active.as_deref())
                 .chain(live.last_active.as_deref());
-            self.icons.prepare(ctx, &self.db, names);
+            self.icons.prepare(&ctx, &self.db, names);
         }
         let icons = self.icons.ids();
 
-        self.sidebar(ctx);
+        self.sidebar(ui);
 
         let p = self.palette;
         egui::CentralPanel::default()
@@ -810,7 +822,7 @@ impl eframe::App for TimeFactoryApp {
                 top: 18,
                 bottom: 6,
             }))
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 ui.spacing_mut().item_spacing = vec2(16.0, 16.0);
                 self.top_bar(ui, &live);
 
@@ -821,7 +833,7 @@ impl eframe::App for TimeFactoryApp {
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing = vec2(16.0, 16.0);
                         match (self.page, &data) {
-                            (Page::Settings, _) => self.settings_page(ui, ctx),
+                            (Page::Settings, _) => self.settings_page(ui, &ctx),
                             (Page::Day, Some(data)) => self.day_page(ui, data, &live, &icons),
                             (_, Some(data)) => self.period_page(ui, data, &icons),
                             _ => {}
@@ -834,5 +846,128 @@ impl eframe::App for TimeFactoryApp {
             });
 
         self.data = data;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ymd(y: i16, m: i8, d: i8) -> Date {
+        Date::new(y, m, d).unwrap()
+    }
+
+    #[test]
+    fn period_day_week_month_boundaries() {
+        // 2026-11-22 is a Sunday; its Monday-Sunday week is 16..=22.
+        assert_eq!(
+            period(Page::Day, ymd(2026, 11, 22)),
+            (ymd(2026, 11, 22), ymd(2026, 11, 22))
+        );
+        assert_eq!(
+            period(Page::Week, ymd(2026, 11, 16)),
+            (ymd(2026, 11, 16), ymd(2026, 11, 22))
+        );
+        assert_eq!(
+            period(Page::Week, ymd(2026, 11, 19)),
+            (ymd(2026, 11, 16), ymd(2026, 11, 22))
+        );
+        assert_eq!(
+            period(Page::Week, ymd(2026, 11, 22)),
+            (ymd(2026, 11, 16), ymd(2026, 11, 22))
+        );
+
+        // Non-leap February, leap February, and December year rollover.
+        assert_eq!(
+            period(Page::Month, ymd(2026, 2, 15)),
+            (ymd(2026, 2, 1), ymd(2026, 2, 28))
+        );
+        assert_eq!(
+            period(Page::Month, ymd(2024, 2, 15)),
+            (ymd(2024, 2, 1), ymd(2024, 2, 29))
+        );
+        assert_eq!(
+            period(Page::Month, ymd(2026, 12, 10)),
+            (ymd(2026, 12, 1), ymd(2026, 12, 31))
+        );
+    }
+
+    #[test]
+    fn shift_date_moves_periods_and_clamps_to_today() {
+        let today = ymd(2026, 11, 22);
+        assert_eq!(
+            shift_date(Page::Day, ymd(2026, 11, 22), false, today),
+            ymd(2026, 11, 21)
+        );
+        assert_eq!(
+            shift_date(Page::Day, ymd(2026, 11, 22), true, today),
+            ymd(2026, 11, 22)
+        );
+        assert_eq!(
+            shift_date(Page::Week, ymd(2026, 11, 20), true, today),
+            ymd(2026, 11, 22)
+        );
+        assert_eq!(
+            shift_date(Page::Week, ymd(2026, 11, 20), false, today),
+            ymd(2026, 11, 13)
+        );
+
+        // End-of-month clamping: Jan 31 + 1 month -> Feb 28 (non-leap) / Feb 29 (leap).
+        assert_eq!(
+            shift_date(Page::Month, ymd(2026, 1, 31), true, today),
+            ymd(2026, 2, 28)
+        );
+        assert_eq!(
+            shift_date(Page::Month, ymd(2024, 1, 31), true, today),
+            ymd(2024, 2, 29)
+        );
+        assert_eq!(
+            shift_date(Page::Month, ymd(2026, 1, 15), false, today),
+            ymd(2025, 12, 15)
+        );
+    }
+
+    #[test]
+    fn elapsed_days_counts_inclusive_and_clamps_future() {
+        assert_eq!(
+            elapsed_days(ymd(2026, 11, 16), ymd(2026, 11, 22), ymd(2026, 11, 18)),
+            3
+        );
+        assert_eq!(
+            elapsed_days(ymd(2026, 11, 16), ymd(2026, 11, 22), ymd(2026, 11, 25)),
+            7
+        );
+        assert_eq!(
+            elapsed_days(ymd(2026, 11, 22), ymd(2026, 11, 22), ymd(2026, 11, 20)),
+            1
+        );
+    }
+
+    #[test]
+    fn view_data_load_day_week_month() {
+        let mut db = UsageDatabase::open_in_memory().unwrap();
+        db.add_second("2026-11-20", 500, "Chrome").unwrap();
+        db.add_second("2026-11-22", 600, "Chrome").unwrap();
+        db.add_second("2026-11-22", 601, "Code").unwrap();
+        db.add_idle_second("2026-11-22").unwrap();
+
+        let day = ViewData::load(&db, Page::Day, ymd(2026, 11, 22));
+        assert_eq!(day.total, 2);
+        assert_eq!(day.idle, 1);
+        assert_eq!(day.days.len(), 7);
+        assert_eq!(day.days[0], (ymd(2026, 11, 16), 0));
+        assert_eq!(day.days[4], (ymd(2026, 11, 20), 1));
+        assert_eq!(day.days[6], (ymd(2026, 11, 22), 2));
+        assert_eq!(day.minutes.len(), 2);
+
+        let week = ViewData::load(&db, Page::Week, ymd(2026, 11, 22));
+        assert_eq!(week.total, 3);
+        assert_eq!(week.idle, 1);
+        assert_eq!(week.days.len(), 7);
+        assert!(week.minutes.is_empty());
+
+        let month = ViewData::load(&db, Page::Month, ymd(2026, 11, 22));
+        assert_eq!(month.total, 3);
+        assert_eq!(month.days.len(), 30);
     }
 }

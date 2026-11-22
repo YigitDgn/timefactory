@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use rusqlite::{params, Connection};
@@ -30,7 +30,10 @@ pub fn database_path() -> PathBuf {
 
 impl UsageDatabase {
     pub fn open() -> rusqlite::Result<Self> {
-        let path = database_path();
+        Self::open_at(&database_path())
+    }
+
+    pub fn open_at(path: &Path) -> rusqlite::Result<Self> {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
@@ -39,6 +42,15 @@ impl UsageDatabase {
         // The tracker thread writes while the UI reads: WAL lets both proceed.
         conn.busy_timeout(Duration::from_secs(2))?;
         conn.query_row("PRAGMA journal_mode=WAL", [], |_| Ok(()))?;
+        Self::init(conn)
+    }
+
+    #[cfg(test)]
+    pub fn open_in_memory() -> rusqlite::Result<Self> {
+        Self::init(Connection::open_in_memory()?)
+    }
+
+    fn init(conn: Connection) -> rusqlite::Result<Self> {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS usage_daily (
                 date TEXT NOT NULL,
@@ -184,5 +196,118 @@ impl UsageDatabase {
             params![key, value],
         )?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn add_second_updates_daily_and_minutes() {
+        let mut db = UsageDatabase::open_in_memory().unwrap();
+        db.add_second("2026-11-22", 600, "Chrome").unwrap();
+        db.add_second("2026-11-22", 600, "Chrome").unwrap();
+        db.add_second("2026-11-22", 601, "Code").unwrap();
+
+        let usage = db.usage_between("2026-11-22", "2026-11-22").unwrap();
+        assert_eq!(usage.len(), 2);
+        assert_eq!(usage[0].process_name, "Chrome");
+        assert_eq!(usage[0].seconds, 2);
+        assert_eq!(usage[1].process_name, "Code");
+        assert_eq!(usage[1].seconds, 1);
+
+        let minutes = db.minutes_for_date("2026-11-22").unwrap();
+        assert_eq!(minutes.len(), 2);
+        assert_eq!(minutes[0].minute, 600);
+        assert_eq!(minutes[0].process_name, "Chrome");
+        assert_eq!(minutes[0].seconds, 2);
+        assert_eq!(minutes[1].minute, 601);
+        assert_eq!(minutes[1].process_name, "Code");
+        assert_eq!(minutes[1].seconds, 1);
+    }
+
+    #[test]
+    fn usage_between_and_daily_totals_filter_dates() {
+        let mut db = UsageDatabase::open_in_memory().unwrap();
+        db.add_second("2026-11-20", 10, "Chrome").unwrap();
+        db.add_second("2026-11-21", 20, "Code").unwrap();
+        db.add_second("2026-11-21", 21, "Code").unwrap();
+        db.add_second("2026-11-22", 30, "Chrome").unwrap();
+
+        let usage = db.usage_between("2026-11-20", "2026-11-21").unwrap();
+        assert_eq!(usage.len(), 2);
+        assert_eq!(usage[0].process_name, "Code");
+        assert_eq!(usage[0].seconds, 2);
+        assert_eq!(usage[1].process_name, "Chrome");
+        assert_eq!(usage[1].seconds, 1);
+
+        let totals = db.daily_totals("2026-11-19", "2026-11-21").unwrap();
+        assert_eq!(totals.len(), 2);
+        assert_eq!(totals.get("2026-11-19"), None);
+        assert_eq!(totals.get("2026-11-20"), Some(&1));
+        assert_eq!(totals.get("2026-11-21"), Some(&2));
+    }
+
+    #[test]
+    fn idle_between_defaults_to_zero_and_sums_range() {
+        let db = UsageDatabase::open_in_memory().unwrap();
+        assert_eq!(db.idle_between("2026-11-20", "2026-11-22").unwrap(), 0);
+
+        db.add_idle_second("2026-11-20").unwrap();
+        db.add_idle_second("2026-11-20").unwrap();
+        db.add_idle_second("2026-11-22").unwrap();
+
+        assert_eq!(db.idle_between("2026-11-20", "2026-11-21").unwrap(), 2);
+        assert_eq!(db.idle_between("2026-11-20", "2026-11-22").unwrap(), 3);
+    }
+
+    #[test]
+    fn app_paths_and_settings_upsert() {
+        let db = UsageDatabase::open_in_memory().unwrap();
+        db.set_app_path("Chrome", "C:\\old\\chrome.exe").unwrap();
+        db.set_app_path("Chrome", "C:\\new\\chrome.exe").unwrap();
+        let paths = db.app_paths().unwrap();
+        assert_eq!(
+            paths.get("Chrome").map(String::as_str),
+            Some("C:\\new\\chrome.exe")
+        );
+
+        assert_eq!(db.setting("theme"), None);
+        db.set_setting("theme", "dark").unwrap();
+        assert_eq!(db.setting("theme").as_deref(), Some("dark"));
+        db.set_setting("theme", "light").unwrap();
+        assert_eq!(db.setting("theme").as_deref(), Some("light"));
+    }
+
+    #[test]
+    fn wal_file_persistence_survives_reopen() {
+        let unique = format!(
+            "timefactory-test-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(unique);
+
+        {
+            let mut db = UsageDatabase::open_at(&path).unwrap();
+            db.add_second("2026-11-22", 720, "TimeFactoryTest").unwrap();
+            db.set_setting("idle_minutes", "5").unwrap();
+        }
+        {
+            let db = UsageDatabase::open_at(&path).unwrap();
+            let usage = db.usage_between("2026-11-22", "2026-11-22").unwrap();
+            assert_eq!(usage.len(), 1);
+            assert_eq!(usage[0].process_name, "TimeFactoryTest");
+            assert_eq!(usage[0].seconds, 1);
+            assert_eq!(db.setting("idle_minutes").as_deref(), Some("5"));
+        }
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
     }
 }

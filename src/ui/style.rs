@@ -74,8 +74,8 @@ pub fn radius(r: u8) -> CornerRadius {
     CornerRadius::same(r)
 }
 
-/// Segoe UI from Windows (falling back to egui's font) plus Phosphor icons,
-/// and a "semibold" family for headings and values.
+/// Segoe UI from Windows (falling back to Arial) plus Phosphor icons,
+/// a "semibold" family for headings and values, and Consolas for monospace.
 pub fn install_fonts(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
     let fonts_dir = std::env::var_os("WINDIR")
@@ -96,6 +96,8 @@ pub fn install_fonts(ctx: &egui::Context) {
     };
     let has_regular = load("segoe", "segoeui.ttf");
     let has_semibold = load("segoe-sb", "seguisb.ttf");
+    let has_arial = !has_regular && load("arial", "arial.ttf");
+    let has_consola = load("consola", "consola.ttf");
 
     fonts.font_data.insert(
         "phosphor".into(),
@@ -111,6 +113,8 @@ pub fn install_fonts(ctx: &egui::Context) {
     let mut proportional = Vec::new();
     if has_regular {
         proportional.push("segoe".to_string());
+    } else if has_arial {
+        proportional.push("arial".to_string());
     }
     proportional.push("phosphor".to_string());
     proportional.extend(fallbacks.iter().cloned());
@@ -121,21 +125,30 @@ pub fn install_fonts(ctx: &egui::Context) {
     }
     semibold_family.extend(proportional.iter().cloned());
 
+    let mut monospace = Vec::new();
+    if has_consola {
+        monospace.push("consola".to_string());
+    }
+    monospace.extend(proportional.iter().cloned());
+
     fonts
         .families
         .insert(FontFamily::Proportional, proportional);
+    fonts.families.insert(FontFamily::Monospace, monospace);
     fonts
         .families
         .insert(FontFamily::Name("semibold".into()), semibold_family);
     ctx.set_fonts(fonts);
 
-    ctx.style_mut(|style| {
-        style.text_styles.insert(TextStyle::Body, regular(14.5));
-        style.text_styles.insert(TextStyle::Button, regular(14.5));
-        style.text_styles.insert(TextStyle::Small, regular(12.0));
-        style.text_styles.insert(TextStyle::Heading, semibold(18.0));
-        style.spacing.button_padding = egui::vec2(10.0, 6.0);
-    });
+    for theme in [egui::Theme::Light, egui::Theme::Dark] {
+        ctx.style_mut_of(theme, |style| {
+            style.text_styles.insert(TextStyle::Body, regular(14.5));
+            style.text_styles.insert(TextStyle::Button, regular(14.5));
+            style.text_styles.insert(TextStyle::Small, regular(12.0));
+            style.text_styles.insert(TextStyle::Heading, semibold(18.0));
+            style.spacing.button_padding = egui::vec2(10.0, 6.0);
+        });
+    }
 }
 
 pub fn visuals(p: &Palette, dark: bool) -> egui::Visuals {

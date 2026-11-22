@@ -201,7 +201,7 @@ Geliştirme sırasında hızlı derleme ve çalıştırma için `cargo run` kull
 | [`egui-phosphor`](https://github.com/amPerl/egui-phosphor) | Arayüz ikonları ([Phosphor Icons](https://phosphoricons.com/)) |
 | [`rusqlite`](https://github.com/rusqlite/rusqlite) | SQLite veritabanı (gömülü) |
 | [`winapi`](https://github.com/retep998/winapi-rs) | Pencere takibi, tray, simge okuma, tema |
-| [`chrono`](https://github.com/chronotope/chrono) | Tarih işlemleri |
+| [`jiff`](https://github.com/BurntSushi/jiff) | Tarih ve saat işlemleri |
 | [`embed-resource`](https://github.com/nabijaczleweli/rust-embed-resource) | Simge, manifest ve sürüm bilgisini exe'ye gömme |
 
 ## Proje Yapısı
@@ -249,7 +249,7 @@ Proje [Anlamsal Sürümleme (SemVer)](https://semver.org/lang/tr/) kullanır. S�
 2. Değişikliği `main` dalına push'layın.
 3. [`release.yml`](.github/workflows/release.yml) workflow'u çalışır:
    - O sürüm için zaten bir release varsa hiçbir şey yapmaz.
-   - Yoksa projeyi Windows üzerinde derler, `vX.Y.Z` etiketiyle yeni bir GitHub Release oluşturur ve exe, zip ve `SHA256SUMS.txt` dosyalarını ekler. Sürüm notları commit'lerden otomatik üretilir.
+   - Yoksa testleri çalıştırır, projeyi Windows üzerinde derler, `vX.Y.Z` etiketiyle yeni bir GitHub Release oluşturur ve exe, zip ve `SHA256SUMS.txt` dosyalarını ekler. Sürüm notları commit'lerden otomatik üretilir.
 
 Workflow'u **Actions → Release → Run workflow** ile elle de tetikleyebilirsiniz.
 
@@ -287,6 +287,7 @@ Hata bildirimleri, öneriler ve pull request'ler memnuniyetle karşılanır.
 2. Değişikliklerinizi yapın; göndermeden önce şunları çalıştırın:
    ```bash
    cargo fmt
+   cargo test --locked
    cargo clippy --release
    cargo build --release
    ```

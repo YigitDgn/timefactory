@@ -252,3 +252,23 @@ unsafe extern "system" fn tray_proc(hwnd: HWND, msg: UINT, w: WPARAM, l: LPARAM)
     }
     DefWindowProcW(hwnd, msg, w, l)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn copy_wide_copies_and_truncates_with_nul() {
+        let mut buf = [0xFFFFu16; 8];
+        copy_wide(&mut buf, "Time");
+        assert_eq!(
+            &buf[..5],
+            &[b'T' as u16, b'i' as u16, b'm' as u16, b'e' as u16, 0]
+        );
+
+        let mut small = [0xFFFFu16; 5];
+        copy_wide(&mut small, "TimeFactory");
+        assert_eq!(small[4], 0);
+        assert_eq!(String::from_utf16(&small[..4]).unwrap(), "Time");
+    }
+}

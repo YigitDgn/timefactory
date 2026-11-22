@@ -1,6 +1,6 @@
 [package]
 name = "timefactory"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2021"
 
 [[bin]]
@@ -8,11 +8,11 @@ name = "TimeFactory"
 path = "src/main.rs"
 
 [dependencies]
-eframe = { version = "0.31", default-features = false, features = ["glow", "default_fonts"] }
-egui-phosphor = "0.9"
+eframe = { version = "0.36", default-features = false, features = ["glow"] }
+egui-phosphor = "0.14"
 raw-window-handle = "0.6"
 rusqlite = { version = "0.41", features = ["bundled"] }
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
+jiff = "0.2"
 winapi = { version = "0.3", features = ["winuser", "commctrl", "processthreadsapi", "winbase", "handleapi", "synchapi", "errhandlingapi", "winerror", "winver", "minwindef", "windef", "winnt", "dwmapi", "uxtheme", "winreg", "libloaderapi", "wingdi", "shellapi", "sysinfoapi"] }
 
 [build-dependencies]
@@ -21,4 +21,6 @@ embed-resource = "2"
 [profile.release]
 opt-level = "s"
 lto = true
+codegen-units = 1
+panic = "abort"
 strip = true

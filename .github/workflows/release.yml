@@ -45,6 +45,10 @@ jobs:
         if: steps.version.outputs.exists == 'false'
         uses: Swatinem/rust-cache@v2
 
+      - name: Test
+        if: steps.version.outputs.exists == 'false'
+        run: cargo test --locked
+
       - name: Build
         if: steps.version.outputs.exists == 'false'
         run: cargo build --release --locked

@@ -9,7 +9,7 @@ use winapi::um::dwmapi::DwmSetWindowAttribute;
 use winapi::um::libloaderapi::{GetProcAddress, LoadLibraryW};
 use winapi::um::winreg::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ThemeMode {
     System,
     Light,
@@ -118,6 +118,36 @@ pub fn set_title_bar_dark(hwnd: HWND, dark: bool) {
             DWMWA_USE_IMMERSIVE_DARK_MODE,
             &value as *const BOOL as _,
             std::mem::size_of::<BOOL>() as DWORD,
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn theme_mode_roundtrip_and_invalid() {
+        for mode in [ThemeMode::System, ThemeMode::Light, ThemeMode::Dark] {
+            assert_eq!(ThemeMode::parse(mode.as_str()), Some(mode));
+        }
+        assert_eq!(ThemeMode::parse("invalid"), None);
+        assert_eq!(ThemeMode::parse(""), None);
+    }
+
+    #[test]
+    fn theme_mode_explicit_is_dark() {
+        assert!(!ThemeMode::Light.is_dark());
+        assert!(ThemeMode::Dark.is_dark());
+    }
+
+    #[test]
+    fn wide_encodes_utf16_with_nul() {
+        let encoded = wide("Boşta");
+        assert_eq!(encoded.last(), Some(&0));
+        assert_eq!(
+            String::from_utf16(&encoded[..encoded.len() - 1]).unwrap(),
+            "Boşta"
         );
     }
 }

@@ -203,3 +203,16 @@ pub fn open_display_names() -> HashSet<String> {
     unsafe { EnumWindows(Some(enum_windows_proc), &mut names as *mut _ as LPARAM) };
     names
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn friendly_name_falls_back_to_file_stem_for_missing_exe() {
+        assert_eq!(
+            friendly_name_from_path("C:\\NonExistent\\MyCustomApp.exe"),
+            "MyCustomApp"
+        );
+    }
+}

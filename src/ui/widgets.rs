@@ -1,10 +1,10 @@
 use std::collections::{BTreeMap, HashMap};
 
-use chrono::{Datelike, Days, Months, NaiveDate};
 use eframe::egui::{
     self, pos2, text::LayoutJob, text::TextWrapping, vec2, Align2, Color32, CornerRadius, FontId,
     Frame, Margin, Pos2, Rect, Response, Sense, Stroke, StrokeKind, TextureId, Ui,
 };
+use jiff::{civil::Date, ToSpan};
 
 use super::format::{hm_clock, hms, month_name, short_duration};
 use super::style::{radius, regular, semibold, Palette, OTHER_APP_COLOR};
@@ -61,7 +61,7 @@ pub fn text_truncated(
         break_anywhere: true,
         overflow_character: Some('…'),
     };
-    let galley = ui.fonts(|f| f.layout_job(job));
+    let galley = ui.painter().layout_job(job);
     let pos = pos2(left_center.x, left_center.y - galley.size().y / 2.0);
     ui.painter().galley(pos, galley, color);
 }
@@ -333,10 +333,10 @@ fn axis_label(seconds: i64) -> String {
 pub fn day_columns(
     ui: &mut Ui,
     p: &Palette,
-    days: &[(NaiveDate, i64)],
-    selected: Option<NaiveDate>,
-    today: NaiveDate,
-) -> Option<NaiveDate> {
+    days: &[(Date, i64)],
+    selected: Option<Date>,
+    today: Date,
+) -> Option<Date> {
     if days.is_empty() {
         return None;
     }
@@ -435,7 +435,7 @@ pub fn day_columns(
             let label = if short_labels {
                 date.day().to_string()
             } else {
-                date.format("%d.%m").to_string()
+                date.strftime("%d.%m").to_string()
             };
             let (font, color) = if is_selected {
                 (semibold(13.0), p.accent)
@@ -470,7 +470,11 @@ pub fn day_columns(
     }
     let tip = response.hover_pos().and_then(index_at).map(|i| {
         let (date, seconds) = days[i];
-        format!("{} · {}", date.format("%d.%m.%Y"), short_duration(seconds))
+        format!(
+            "{} · {}",
+            date.strftime("%d.%m.%Y"),
+            short_duration(seconds)
+        )
     });
     if let Some(tip) = tip {
         response
@@ -633,11 +637,11 @@ pub fn status_pill(ui: &mut Ui, p: &Palette, text: &str, color: Color32) -> Resp
 pub fn calendar(
     ui: &mut Ui,
     p: &Palette,
-    month: &mut NaiveDate,
-    selected: NaiveDate,
-    today: NaiveDate,
-) -> Option<NaiveDate> {
-    let first = month.with_day(1).unwrap_or(*month);
+    month: &mut Date,
+    selected: Date,
+    today: Date,
+) -> Option<Date> {
+    let first = month.first_of_month();
     let cell = vec2(38.0, 32.0);
     let grid_w = cell.x * 7.0;
     let mut picked = None;
@@ -649,15 +653,15 @@ pub fn calendar(
                 .add(egui::Button::new(egui_phosphor::regular::CARET_LEFT).frame(false))
                 .clicked()
             {
-                *month = first.checked_sub_months(Months::new(1)).unwrap_or(first);
+                *month = first.checked_sub(1.month()).unwrap_or(first);
             }
-            let title = format!("{} {}", month_name(first.month()), first.year());
+            let title = format!("{} {}", month_name(first.month() as u32), first.year());
             let label_w = grid_w - 2.0 * 34.0 - 2.0 * ui.spacing().item_spacing.x;
             ui.add_sized(
                 vec2(label_w, 24.0),
                 egui::Label::new(egui::RichText::new(title).font(semibold(15.0))),
             );
-            let next = first.checked_add_months(Months::new(1)).unwrap_or(first);
+            let next = first.checked_add(1.month()).unwrap_or(first);
             if ui
                 .add_enabled(
                     next <= today,
@@ -685,12 +689,14 @@ pub fn calendar(
         );
     }
 
-    let offset = first.weekday().num_days_from_monday() as u64;
-    let start = first - Days::new(offset);
+    let offset = i64::from(first.weekday().to_monday_zero_offset());
+    let start = first.checked_sub(offset.days()).unwrap_or(first);
     for week in 0..6 {
         let (row, _) = ui.allocate_exact_size(vec2(grid_w, cell.y), Sense::hover());
         for weekday in 0..7 {
-            let date = start + Days::new(week * 7 + weekday);
+            let date = start
+                .checked_add((week * 7 + weekday).days())
+                .unwrap_or(start);
             if date.month() != first.month() {
                 continue;
             }
@@ -741,4 +747,127 @@ pub fn calendar(
         }
     }
     picked
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::style::{APP_COLORS, DARK, LIGHT};
+
+    #[test]
+    fn axis_step_and_label_cases() {
+        assert_eq!(axis_step(0), 300);
+        assert_eq!(axis_step(1500), 300);
+        assert_eq!(axis_step(1501), 900);
+        assert_eq!(axis_step(18000), 3600);
+        assert_eq!(axis_step(200_000), 21600);
+
+        assert_eq!(axis_label(0), "0");
+        assert_eq!(axis_label(3600), "1s");
+        assert_eq!(axis_label(7200), "2s");
+        assert_eq!(axis_label(1800), "30dk");
+    }
+
+    #[test]
+    fn app_colors_maps_up_to_palette_len() {
+        let apps: Vec<UsageRow> = (0..8)
+            .map(|i| UsageRow {
+                process_name: format!("App{i}"),
+                seconds: 100 - i as i64,
+            })
+            .collect();
+        let map = app_colors(&apps, &APP_COLORS);
+        assert_eq!(map.len(), APP_COLORS.len());
+        assert_eq!(map.get("App0"), Some(&APP_COLORS[0]));
+        assert_eq!(map.get("App6"), None);
+    }
+
+    #[test]
+    fn widgets_render_headless_smoke() {
+        let ctx = egui::Context::default();
+        crate::ui::style::install_fonts(&ctx);
+        let today = Date::new(2026, 11, 22).unwrap();
+        let days: Vec<(Date, i64)> = (0..7_i64)
+            .map(|offset| {
+                (
+                    today.checked_sub((6 - offset).days()).unwrap(),
+                    (offset + 1) * 900,
+                )
+            })
+            .collect();
+        let apps = vec![
+            UsageRow {
+                process_name: "Google Chrome".into(),
+                seconds: 5400,
+            },
+            UsageRow {
+                process_name: "Visual Studio Code".into(),
+                seconds: 2700,
+            },
+        ];
+        let minutes = vec![
+            MinuteRow {
+                minute: 540,
+                process_name: "Google Chrome".into(),
+                seconds: 40,
+            },
+            MinuteRow {
+                minute: 540,
+                process_name: "Visual Studio Code".into(),
+                seconds: 20,
+            },
+            MinuteRow {
+                minute: 541,
+                process_name: "Google Chrome".into(),
+                seconds: 60,
+            },
+        ];
+        let colors = app_colors(&apps, &APP_COLORS);
+        let legend: Vec<(String, Color32)> = apps
+            .iter()
+            .filter_map(|a| {
+                colors
+                    .get(&a.process_name)
+                    .map(|c| (a.process_name.clone(), *c))
+            })
+            .collect();
+        let icons = HashMap::new();
+        let status = |name: &str| (name == "Google Chrome").then_some(Color32::GREEN);
+
+        for palette in [&LIGHT, &DARK] {
+            let mut cal_month = today;
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    kpi_card(
+                        ui,
+                        palette,
+                        "A",
+                        "Bugün toplam",
+                        KpiValue {
+                            text: "2s 15dk".into(),
+                            app_icon: None,
+                        },
+                    );
+                    kpi_card(
+                        ui,
+                        palette,
+                        "B",
+                        "En çok",
+                        KpiValue {
+                            text: "Google Chrome".into(),
+                            app_icon: Some((None, "Google Chrome")),
+                        },
+                    );
+                    app_bars(ui, palette, &icons, &apps, 6);
+                    timeline(ui, palette, &minutes, &colors, &legend);
+                    day_columns(ui, palette, &days, Some(today), today);
+                    usage_table(ui, palette, &icons, &apps, Some(&status));
+                    nav_item(ui, palette, "H", "Bugün", true);
+                    status_pill(ui, palette, "Takip ediliyor", Color32::GREEN);
+                    calendar(ui, palette, &mut cal_month, today, today);
+                });
+            });
+            output.textures_delta.clear();
+        }
+    }
 }
